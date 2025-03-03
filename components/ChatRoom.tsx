@@ -9,8 +9,6 @@ import {
     FiMicOff,
     FiCamera,
     FiCameraOff,
-    FiWifi,
-    FiWifiOff,
     FiFile,
     FiImage,
     FiMusic,
@@ -291,7 +289,7 @@ const ChatRoom: React.FC = () => {
 
     const connectWebSocket = () => {
         try {
-            const socket = new WebSocket("wss://demo.piesocket.com/v3/channel_123?api_key=VCXCEuvhGcBDP7XhiJJUDvR1e1D3eiVjgZ9VRiaV");
+            const socket = new WebSocket("wss://talented-empathy-production-e9b1.up.railway.app");
 
             socket.onopen = () => {
                 setConnectionState({
@@ -391,6 +389,7 @@ const ChatRoom: React.FC = () => {
         }
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleNewMessage = (data: any) => {
         console.log("Creating new message with data:", data);
         console.log("Current userId:", userId);
@@ -413,6 +412,7 @@ const ChatRoom: React.FC = () => {
         scrollToBottom();
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleFileMessage = (data: any) => {
         const newMessage: Message = {
             id: Date.now().toString(),
@@ -518,7 +518,7 @@ const ChatRoom: React.FC = () => {
         return <FiFile />;
     };
 
-    // Call Handling
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleIceCandidate = async (data: any) => {
         try {
             if (callState.peerConnection) {
@@ -638,6 +638,7 @@ const ChatRoom: React.FC = () => {
         }
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleCallAnswer = async (data: any) => {
         if (callState.peerConnection) {
             await callState.peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
@@ -649,6 +650,7 @@ const ChatRoom: React.FC = () => {
         }
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleCallOffer = async (data: any) => {
         setCallState(prev => ({
             ...prev,
@@ -787,6 +789,7 @@ const ChatRoom: React.FC = () => {
         }));
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleCallEnded = (data: any) => {
         cleanup();
         setMessages(prev => [...prev, {
@@ -870,22 +873,22 @@ const ChatRoom: React.FC = () => {
     };
 
     // UI Components
-    const renderConnectionStatus = () => (
-        <div className={`flex items-center gap-2 px-4 py-2 ${connectionState.status === 'connected'
-            ? 'bg-green-500'
-            : connectionState.status === 'connecting'
-                ? 'bg-yellow-500'
-                : 'bg-red-500'
-            } text-white`}>
-            {connectionState.status === 'connected' ? (
-                <><FiWifi /> Connected</>
-            ) : connectionState.status === 'connecting' ? (
-                <><FiWifi className="animate-pulse" /> Connecting...</>
-            ) : (
-                <><FiWifiOff /> Disconnected</>
-            )}
-        </div>
-    );
+    // const renderConnectionStatus = () => (
+    //     <div className={`flex items-center gap-2 px-4 py-2 ${connectionState.status === 'connected'
+    //         ? 'bg-green-500'
+    //         : connectionState.status === 'connecting'
+    //             ? 'bg-yellow-500'
+    //             : 'bg-red-500'
+    //         } text-white`}>
+    //         {connectionState.status === 'connected' ? (
+    //             <><FiWifi /> Connected</>
+    //         ) : connectionState.status === 'connecting' ? (
+    //             <><FiWifi className="animate-pulse" /> Connecting...</>
+    //         ) : (
+    //             <><FiWifiOff /> Disconnected</>
+    //         )}
+    //     </div>
+    // );
 
     const renderCallInterface = () => (
         <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center">
