@@ -18,6 +18,10 @@ interface WebRTCState {
     isVideo: boolean;
     incomingCall: boolean;
     caller: string | null;
+    callerName: string | null;
+    callStatus: 'idle' | 'calling' | 'rejected' | 'connected';
+    callStartTime: number | null;
+    callDuration: string;
 }
 
 export default function ChatApp() {
@@ -33,15 +37,25 @@ export default function ChatApp() {
         isInCall: false,
         isVideo: false,
         incomingCall: false,
-        caller: null
+        caller: null,
+        callerName: null,
+        callStatus: 'idle',
+        callStartTime: null,
+        callDuration: '00:00'
     });
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
+    const [isTyping, setIsTyping] = useState<boolean>(false);
+    const [remoteTyping, setRemoteTyping] = useState<boolean>(false);
+    const typingTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+    console.log(remoteTyping);
+
     useEffect(() => {
-        const socket = new WebSocket("ws://talented-empathy-production-e9b1.up.railway.app");
+        debugger
+        const socket = new WebSocket("ws:talented-empathy-production-e9b1.up.railway.app");
 
         socket.onopen = () => {
             console.log("Connected to WebSocket");
@@ -50,7 +64,7 @@ export default function ChatApp() {
         socket.onmessage = async (event) => {
             const data = JSON.parse(event.data);
             console.log("Received message:", data);
-
+            debugger
             switch (data.type) {
                 case "userId":
                     setUserId(data.userId);
@@ -80,15 +94,120 @@ export default function ChatApp() {
                     break;
 
                 case "call-offer":
-                    handleIncomingCall(data);
+                    setCallState(prev => ({
+                        ...prev,
+                        incomingCall: true,
+                        caller: data.caller,
+                        callerName: data.callerName || "Someone",
+                        isVideo: data.isVideo
+                    }));
+                    sessionStorage.setItem('pendingOffer', JSON.stringify(data));
                     break;
 
                 case "call-answer":
-                    handleCallAnswer(data);
+                    await handleCallAnswer(data);
+                    const startTime = Date.now();
+                    setCallState(prev => ({
+                        ...prev,
+                        callStatus: 'connected',
+                        callStartTime: startTime,
+                        callDuration: '00:00'
+                    }));
+
+                    // Start counting immediately
+                    const now = Date.now();
+                    const diff = now - startTime;
+                    const minutes = Math.floor(diff / 60000);
+                    const seconds = Math.floor((diff % 60000) / 1000);
+                    const duration = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+                    setCallState(prev => ({
+                        ...prev,
+                        callDuration: duration
+                    }));
                     break;
 
                 case "ice-candidate":
                     handleNewICECandidate(data);
+                    break;
+
+                case "call-rejected":
+                    setCallState(prev => ({
+                        ...prev,
+                        callStatus: 'rejected'
+                    }));
+                    setTimeout(() => {
+                        stopCall(true, true);
+                    }, 2000);
+                    break;
+
+                case "call-ended":
+                    // Store call info before cleanup
+                    const endedCallType = callState.isVideo ? 'Video' : 'Audio';
+                    const endedCallDuration = callState.callDuration;
+                    const wasConnected = callState.callStatus === 'connected';
+
+                    // Stop all media tracks
+                    if (callState.localStream) {
+                        callState.localStream.getTracks().forEach(track => {
+                            track.stop();
+                            track.enabled = false;
+                        });
+                    }
+
+                    // Close peer connection
+                    if (callState.peerConnection) {
+                        try {
+                            callState.peerConnection.getSenders().forEach(sender => {
+                                if (sender.track) {
+                                    sender.track.stop();
+                                    sender.track.enabled = false;
+                                }
+                            });
+                            callState.peerConnection.close();
+                        } catch (err) {
+                            console.error('Error closing peer connection:', err);
+                        }
+                    }
+
+                    // Clear video elements
+                    if (localVideoRef.current) {
+                        localVideoRef.current.srcObject = null;
+                    }
+                    if (remoteVideoRef.current) {
+                        remoteVideoRef.current.srcObject = null;
+                    }
+
+                    // Reset call state completely
+                    setCallState({
+                        localStream: null,
+                        remoteStream: null,
+                        peerConnection: null,
+                        isInCall: false,
+                        isVideo: false,
+                        incomingCall: false,
+                        caller: null,
+                        callerName: null,
+                        callStatus: 'idle',
+                        callStartTime: null,
+                        callDuration: '00:00'
+                    });
+
+                    // Add call ended message
+                    if (wasConnected) {
+                        setMessages(prev => [...prev, {
+                            text: `${endedCallType} call ended: ${endedCallDuration}`,
+                            sender: 'system',
+                            type: 'text'
+                        }]);
+                    }
+                    break;
+
+                case "typing":
+                    debugger
+                    if (data.sender !== userId) {
+                        setRemoteTyping(data.isTyping);
+                    }
                     break;
             }
         };
@@ -108,6 +227,31 @@ export default function ChatApp() {
             stopCall();
         };
     }, []);
+
+    useEffect(() => {
+        let intervalId: NodeJS.Timeout;
+
+        if (callState.callStatus === 'connected' && callState.callStartTime) {
+            intervalId = setInterval(() => {
+                const now = Date.now();
+                const diff = now - callState.callStartTime!;
+                const minutes = Math.floor(diff / 60000);
+                const seconds = Math.floor((diff % 60000) / 1000);
+                const duration = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+                setCallState(prev => ({
+                    ...prev,
+                    callDuration: duration
+                }));
+            }, 1000);
+        }
+
+        return () => {
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+        };
+    }, [callState.callStatus, callState.callStartTime]);
 
     const sendMessage = async () => {
         if (input.trim() !== "" && ws && ws.readyState === WebSocket.OPEN) {
@@ -148,8 +292,32 @@ export default function ChatApp() {
             });
 
             const peerConnection = new RTCPeerConnection({
-                iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' }
+                ]
             });
+
+            // Add connection state monitoring
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Connection state:", peerConnection.connectionState);
+                if (peerConnection.connectionState === 'failed') {
+                    console.error("Connection failed - Please check your network connection");
+                    stopCall();
+                }
+            };
+
+            // Add ICE connection state monitoring
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("ICE connection state:", peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    console.error("ICE connection failed - Try using a different network");
+                    stopCall();
+                }
+            };
 
             stream.getTracks().forEach(track => {
                 peerConnection.addTrack(track, stream);
@@ -182,8 +350,10 @@ export default function ChatApp() {
                 ws.send(JSON.stringify({
                     type: "call-offer",
                     offer: offer,
-                    target: "other", // In a real app, you'd specify the target user
-                    isVideo
+                    target: "other",
+                    isVideo,
+                    caller: userId,
+                    callerName: "User" // You can replace this with actual user name if available
                 }));
             }
 
@@ -194,7 +364,11 @@ export default function ChatApp() {
                 isInCall: true,
                 isVideo,
                 incomingCall: false,
-                caller: null
+                caller: null,
+                callerName: null,
+                callStatus: 'calling',
+                callStartTime: null,
+                callDuration: '00:00'
             });
 
         } catch (error) {
@@ -225,8 +399,32 @@ export default function ChatApp() {
             });
 
             const peerConnection = new RTCPeerConnection({
-                iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' }
+                ]
             });
+
+            // Add connection state monitoring
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Connection state:", peerConnection.connectionState);
+                if (peerConnection.connectionState === 'failed') {
+                    console.error("Connection failed - Please check your network connection");
+                    stopCall();
+                }
+            };
+
+            // Add ICE connection state monitoring
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("ICE connection state:", peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    console.error("ICE connection failed - Try using a different network");
+                    stopCall();
+                }
+            };
 
             stream.getTracks().forEach(track => {
                 peerConnection.addTrack(track, stream);
@@ -271,7 +469,11 @@ export default function ChatApp() {
                 isInCall: true,
                 isVideo: data.isVideo,
                 incomingCall: false,
-                caller: null
+                caller: null,
+                callerName: null,
+                callStatus: 'connected',
+                callStartTime: Date.now(),
+                callDuration: '00:00'
             });
 
         } catch (error) {
@@ -285,6 +487,14 @@ export default function ChatApp() {
                 await callState.peerConnection.setRemoteDescription(
                     new RTCSessionDescription(data.answer)
                 );
+                const startTime = Date.now();
+                setCallState(prev => ({
+                    ...prev,
+                    callStatus: 'connected',
+                    remoteStream: data.streams?.[0] || null,
+                    callStartTime: startTime,
+                    callDuration: '00:00'
+                }));
             }
         } catch (error) {
             console.error("Error handling call answer:", error);
@@ -303,19 +513,43 @@ export default function ChatApp() {
         }
     };
 
-    const stopCall = () => {
+    const stopCall = (fromRemote = false, isRejected = false) => {
+        // Store current call info before cleanup
+        const currentCallType = callState.isVideo ? 'Video' : 'Audio';
+        const currentCallDuration = callState.callDuration;
+        const wasConnected = callState.callStatus === 'connected';
+
+        // Send call-ended message first (only if local user is ending and not rejecting)
+        if (!fromRemote && !isRejected && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: "call-ended",
+                target: "other",
+                duration: currentCallDuration
+            }));
+        }
+
+        // Stop all media tracks
         if (callState.localStream) {
             callState.localStream.getTracks().forEach(track => track.stop());
         }
+
+        // Close peer connection
         if (callState.peerConnection) {
-            callState.peerConnection.close();
+            try {
+                callState.peerConnection.getSenders().forEach(sender => {
+                    if (sender.track) sender.track.stop();
+                });
+                callState.peerConnection.close();
+            } catch (err) {
+                console.error('Error closing peer connection:', err);
+            }
         }
-        if (localVideoRef.current) {
-            localVideoRef.current.srcObject = null;
-        }
-        if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-        }
+
+        // Clear video elements
+        if (localVideoRef.current) localVideoRef.current.srcObject = null;
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+
+        // Reset call state completely
         setCallState({
             localStream: null,
             remoteStream: null,
@@ -323,9 +557,62 @@ export default function ChatApp() {
             isInCall: false,
             isVideo: false,
             incomingCall: false,
-            caller: null
+            caller: null,
+            callerName: null,
+            callStatus: 'idle',
+            callStartTime: null,
+            callDuration: '00:00'
         });
+
+        // Add appropriate message based on call state
+        if (isRejected) {
+            setMessages(prev => [...prev, {
+                text: `Call was rejected`,
+                sender: 'system',
+                type: 'text'
+            }]);
+        } else if (wasConnected && currentCallDuration !== '00:00') {
+            setMessages(prev => [...prev, {
+                text: `${currentCallType} call ended: ${currentCallDuration}`,
+                sender: 'system',
+                type: 'text'
+            }]);
+        }
     };
+
+
+    // Update the cleanup effect to handle disconnections
+    useEffect(() => {
+        if (callState.peerConnection) {
+            const handleConnectionStateChange = () => {
+                const state = callState.peerConnection?.connectionState;
+                console.log('Peer connection state changed:', state);
+
+                if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+                    console.log('Connection lost, cleaning up call...');
+                    stopCall(true);
+                }
+            };
+
+            const handleIceConnectionStateChange = () => {
+                const state = callState.peerConnection?.iceConnectionState;
+                console.log('ICE connection state changed:', state);
+
+                if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+                    console.log('ICE connection lost, cleaning up call...');
+                    stopCall();
+                }
+            };
+
+            callState.peerConnection.addEventListener('connectionstatechange', handleConnectionStateChange);
+            callState.peerConnection.addEventListener('iceconnectionstatechange', handleIceConnectionStateChange);
+
+            return () => {
+                callState.peerConnection?.removeEventListener('connectionstatechange', handleConnectionStateChange);
+                callState.peerConnection?.removeEventListener('iceconnectionstatechange', handleIceConnectionStateChange);
+            };
+        }
+    }, [callState.peerConnection]);
 
     const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -385,42 +672,215 @@ export default function ChatApp() {
         document.body.removeChild(link);
     };
 
+    const acceptCall = async () => {
+        const storedData = sessionStorage.getItem('pendingOffer');
+        if (storedData) {
+            const data = JSON.parse(storedData);
+            await handleIncomingCall(data);
+            setCallState(prev => ({
+                ...prev,
+                callStatus: 'connected',
+                callStartTime: Date.now()
+            }));
+            sessionStorage.removeItem('pendingOffer');
+        }
+    };
+
+    const rejectCall = () => {
+        if (ws && callState.caller) {
+            ws.send(JSON.stringify({
+                type: "call-rejected",
+                target: callState.caller
+            }));
+        }
+
+        // Clean up resources
+        if (callState.localStream) {
+            callState.localStream.getTracks().forEach(track => track.stop());
+        }
+        if (callState.peerConnection) {
+            callState.peerConnection.close();
+        }
+
+        // Reset state
+        setCallState({
+            localStream: null,
+            remoteStream: null,
+            peerConnection: null,
+            isInCall: false,
+            isVideo: false,
+            incomingCall: false,
+            caller: null,
+            callerName: null,
+            callStatus: 'rejected',
+            callStartTime: null,
+            callDuration: '00:00'
+        });
+
+        // Show rejection message
+        setMessages(prev => [...prev, {
+            text: 'Call was rejected',
+            sender: 'system',
+            type: 'text'
+        }]);
+
+        // Clear rejection state after delay
+        setTimeout(() => {
+            setCallState(prev => ({
+                ...prev,
+                callStatus: 'idle'
+            }));
+        }, 2000);
+
+        sessionStorage.removeItem('pendingOffer');
+    };
+
+    const handleTyping = () => {
+        if (!isTyping) {
+            setIsTyping(true);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'typing',
+                    isTyping: true,
+                    sender: userId
+                }));
+            }
+        }
+
+        if (typingTimeoutRef.current) {
+            clearTimeout(typingTimeoutRef.current);
+        }
+
+        typingTimeoutRef.current = setTimeout(() => {
+            setIsTyping(false);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'typing',
+                    isTyping: false,
+                    sender: userId
+                }));
+            }
+        }, 2000);
+    };
+
+    console.log(callState.callStatus);
+
+
     return (
         <div className="flex flex-col h-screen bg-gray-100">
             {/* Header */}
             <div className="p-4 bg-blue-600 text-white text-lg font-bold">Chat</div>
 
+            {/* Error/Notification Message */}
+            {error && (
+                <div className="fixed top-4 right-4 z-50 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg">
+                    {error}
+                </div>
+            )}
+
+            {/* Incoming Call UI */}
+            {callState.incomingCall && !callState.isInCall && (
+                <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center">
+                    <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
+                        <h3 className="text-xl font-semibold mb-4 text-center">
+                            Incoming {callState.isVideo ? 'Video' : 'Audio'} Call
+                        </h3>
+                        <p className="text-center mb-6">
+                            {callState.callerName} is calling...
+                        </p>
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={acceptCall}
+                                className="px-6 py-2 bg-green-500 text-white rounded-full hover:bg-green-600 flex items-center"
+                            >
+                                <FiPhone className="mr-2" />
+                                Accept
+                            </button>
+                            <button
+                                onClick={rejectCall}
+                                className="px-6 py-2 bg-red-500 text-white rounded-full hover:bg-red-600 flex items-center"
+                            >
+                                <FiX className="mr-2" />
+                                Reject
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Call Interface */}
             {callState.isInCall && (
                 <div className="fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center">
                     <div className="relative w-full max-w-4xl p-4">
-                        <button
-                            onClick={stopCall}
-                            className="absolute top-4 right-4 p-2 bg-red-500 text-white rounded-full"
-                        >
-                            <FiX size={24} />
-                        </button>
-                        <div className="grid grid-cols-2 gap-4">
-                            {callState.isVideo && (
-                                <>
-                                    <video
-                                        ref={localVideoRef}
-                                        autoPlay
-                                        playsInline
-                                        muted
-                                        className="w-full bg-black rounded-lg"
-                                    />
-                                    <video
-                                        ref={remoteVideoRef}
-                                        autoPlay
-                                        playsInline
-                                        className="w-full bg-black rounded-lg"
-                                    />
-                                </>
+                        <div className="absolute top-4 right-4 flex items-center gap-4">
+                            {callState.callStatus === 'connected' && (
+                                <div className="bg-gray-800 text-white px-4 py-2 rounded-full">
+                                    {callState.callDuration}
+                                </div>
                             )}
-                            {!callState.isVideo && (
+                            <button
+                                onClick={() => stopCall(false)}
+                                className="p-2 bg-red-500 text-white rounded-full"
+                            >
+                                <FiX size={24} />
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            {callState.isVideo ? (
+                                <div className="col-span-2 relative">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <video
+                                            ref={localVideoRef}
+                                            autoPlay
+                                            playsInline
+                                            muted
+                                            className="w-full bg-black rounded-lg"
+                                        />
+                                        <video
+                                            ref={remoteVideoRef}
+                                            autoPlay
+                                            playsInline
+                                            className="w-full bg-black rounded-lg"
+                                        />
+                                    </div>
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center space-y-4">
+                                        {callState.callStatus === 'calling' && (
+                                            <div className="text-white text-xl bg-black bg-opacity-50 px-6 py-3 rounded-full">
+                                                Calling...
+                                            </div>
+                                        )}
+                                        {callState.callStatus === 'rejected' && (
+                                            <div className="text-white text-xl bg-red-500 bg-opacity-90 px-6 py-3 rounded-full">
+                                                Call Rejected
+                                            </div>
+                                        )}
+                                        {callState.callStatus === 'connected' && (
+                                            <button
+                                                onClick={() => stopCall(false)}
+                                                className="px-6 py-2 bg-red-500 text-white rounded-full hover:bg-red-600"
+                                            >
+                                                End Call 1
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            ) : (
                                 <div className="col-span-2 flex items-center justify-center h-48 bg-gray-800 rounded-lg">
-                                    <div className="text-white text-xl">Audio Call in Progress</div>
+                                    <div className="flex flex-col items-center space-y-4">
+                                        <div className="text-white text-xl">
+                                            {callState.callStatus === 'calling' && 'Calling...'}
+                                            {callState.callStatus === 'rejected' && 'Call Rejected'}
+                                            {callState.callStatus === 'connected' && 'Audio Call Connected'}
+                                        </div>
+                                        {callState.callStatus === 'connected' && (
+                                            <button
+                                                onClick={() => stopCall(false)}
+                                                className="px-6 py-2 bg-red-500 text-white rounded-full hover:bg-red-600"
+                                            >
+                                                End Call
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -433,7 +893,11 @@ export default function ChatApp() {
                 {messages.map((msg, index) => (
                     <div
                         key={index}
-                        className={`p-2 max-w-xs rounded-lg ${msg.sender === "me" ? "ml-auto bg-blue-500 text-white" : "bg-gray-200"
+                        className={`p-2 max-w-xs rounded-lg ${msg.sender === "me"
+                            ? "ml-auto bg-blue-500 text-white"
+                            : msg.sender === "system"
+                                ? "mx-auto bg-gray-500 text-white"
+                                : "bg-gray-200"
                             }`}
                     >
                         {msg.type === "file" ? (
@@ -455,6 +919,12 @@ export default function ChatApp() {
                         )}
                     </div>
                 ))}
+                {remoteTyping && (
+                    <div className="flex items-center space-x-2 text-gray-500 text-sm">
+                        <span>Someone is typing</span>
+                        <span className="animate-pulse">...</span>
+                    </div>
+                )}
             </div>
 
             {/* Input & Controls */}
@@ -476,7 +946,10 @@ export default function ChatApp() {
                     className="flex-1 p-2 border rounded-lg"
                     placeholder="Type a message..."
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => {
+                        setInput(e.target.value);
+                        handleTyping();
+                    }}
                     onKeyPress={(e) => e.key === "Enter" && sendMessage()}
                 />
                 <button className="p-2 bg-blue-500 text-white rounded-full" onClick={sendMessage}>
